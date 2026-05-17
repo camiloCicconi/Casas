@@ -245,6 +245,8 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:15px;heigh
     <div class="ni" id="sb-add"><span class="ni-ico">➕</span>Nueva Propiedad</div>
     <div class="ni" id="sb-link"><span class="ni-ico">🔗</span>Pegar Link</div>
     <div class="ni" id="sb-paste"><span class="ni-ico">📋</span>Pegar Texto</div>
+    <div class="ni" id="sb-export"><span class="ni-ico">📤</span>Exportar Datos</div>
+    <div class="ni" id="sb-import-btn"><span class="ni-ico">📥</span>Importar Datos</div>
     <div class="ni" id="sb-reset"><span class="ni-ico">🔄</span>Restaurar Ejemplos</div>
     <div class="ni" id="sb-clear" style="color:rgba(239,68,68,.7)"><span class="ni-ico">🗑️</span>Borrar Todo</div>
   </nav>
@@ -259,7 +261,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:15px;heigh
 
 <main id="main">
   <header id="topbar">
-    <div class="topbar-title" id="page-title">Dashboard <span>Principal</span></div>
+    <div class="topbar-title" id="page-title">Dashboard <span>Principal</span></div><div title="Sincronizando..." id="sync-dot" style="width:10px;height:10px;border-radius:50%;background:#C9A840;flex-shrink:0;transition:background .5s" title="Sync"></div>
     <div class="sw"><span class="sw-ico">🔍</span><input type="text" id="search-inp" placeholder="Buscar propiedades..."></div>
     <button class="btn btn-ghost" id="btn-filters">🎛️ Filtros</button>
     <button class="btn btn-gold" id="btn-add-top">＋ Nueva</button>
@@ -268,6 +270,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:15px;heigh
 </main>
 </div>
 
+<input type="file" id="import-file" accept=".json" style="display:none">
 <!-- FILTERS PANEL -->
 <div class="fp" id="fp">
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
@@ -414,7 +417,37 @@ let props=JSON.parse(localStorage.getItem('pt_props')||'null')||JSON.parse(JSON.
 let curView='dashboard',viewMode='cards',selCmp=[],editId=null,detailId=null,charts={},selAmen=[];
 let filters={search:'',precioMax:500000,hab:0,cochera:false,patio:false,pileta:false,estado:'all',tipo:'all',prio:'all'};
 
-function save(){localStorage.setItem('pt_props',JSON.stringify(props));localStorage.setItem('pt_budget',String(budget));}
+const FB='https://proptracker-b0e52-default-rtdb.firebaseio.com';
+function save(){
+  localStorage.setItem('pt_props',JSON.stringify(props));
+  localStorage.setItem('pt_budget',String(budget));
+  syncToFirebase();
+}
+async function syncToFirebase(){
+  try{
+    await fetch(FB+'/data.json',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({props,budget,updated:Date.now()})});
+    showSyncDot('ok');
+  }catch(e){showSyncDot('err');}
+}
+async function loadFromFirebase(){
+  try{
+    const r=await fetch(FB+'/data.json');
+    const d=await r.json();
+    if(d&&d.props&&d.props.length>0){
+      props=d.props;
+      if(d.budget)budget=d.budget;
+      localStorage.setItem('pt_props',JSON.stringify(props));
+      localStorage.setItem('pt_budget',String(budget));
+    }
+  }catch(e){}
+}
+function showSyncDot(status){
+  let dot=document.getElementById('sync-dot');
+  if(!dot)return;
+  dot.style.background=status==='ok'?'#2D9A6A':'#DC2626';
+  dot.title=status==='ok'?'Sincronizado con Firebase':'Error de sincronización';
+  setTimeout(()=>{dot.style.background='#C9A840';},2000);
+}
 function score(p){
   const ps=p.precio<=budget?Math.max(0,(1-p.precio/budget))*25:0;
   const is=(p.interes/10)*30;
@@ -945,6 +978,39 @@ function parsePropertyText(txt){
   return r;
 }
 
+/* --- EXPORT / IMPORT --- */
+function exportData(){
+  const data={props,budget,exported:new Date().toISOString()};
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='proptracker-datos-'+new Date().toISOString().split('T')[0]+'.json';
+  a.click();
+  showToast('✅ Datos exportados correctamente.');
+}
+function importData(file){
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=e=>{
+    try{
+      const data=JSON.parse(e.target.result);
+      if(!data.props||!Array.isArray(data.props))throw new Error('Formato inválido');
+      if(!confirm('¿Importar '+data.props.length+' propiedades? Esto reemplazará los datos actuales.'))return;
+      props=data.props;
+      if(data.budget)budget=data.budget;
+      save();
+      updBadge();
+      renderView();
+      const bI=document.getElementById('budget-inp');if(bI)bI.value=budget;
+      document.getElementById('budget-disp').textContent='U$D '+Number(budget).toLocaleString('es-AR');
+      showToast('✅ '+props.length+' propiedades importadas correctamente.');
+    }catch(err){
+      showToast('❌ Error al importar. Verificá que sea un archivo válido de PropTracker.');
+    }
+  };
+  reader.readAsText(file);
+}
+
 /* --- INIT --- */
 document.addEventListener('DOMContentLoaded',()=>{
   const bI=document.getElementById('budget-inp');
@@ -959,6 +1025,9 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.getElementById('paste-ol').addEventListener('click',e=>{if(e.target===document.getElementById('paste-ol'))closePasteModal();});
   document.getElementById('paste-analyze').addEventListener('click',analyzePastedText);
   document.getElementById('sb-reset').addEventListener('click',()=>{if(confirm('¿Restaurar ejemplos? Se perderán tus datos actuales.')){props=JSON.parse(JSON.stringify(SD));save();updBadge();renderView();}});
+  document.getElementById('sb-export').addEventListener('click',exportData);
+  document.getElementById('sb-import-btn').addEventListener('click',()=>document.getElementById('import-file').click());
+  document.getElementById('import-file').addEventListener('change',e=>{importData(e.target.files[0]);e.target.value='';});
   document.getElementById('sb-clear').addEventListener('click',()=>{if(confirm('¿Borrar TODAS las propiedades? Esta acción no se puede deshacer.')){props=[];selCmp=[];save();updBadge();renderView();}});
   document.getElementById('btn-add-top').addEventListener('click',()=>openModal());
   document.getElementById('btn-filters').addEventListener('click',()=>document.getElementById('fp').classList.toggle('vis'));
@@ -989,7 +1058,19 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.getElementById('dr-ol').addEventListener('click',e=>{if(e.target===document.getElementById('dr-ol'))closeDrawer();});
   document.getElementById('dr-close').addEventListener('click',closeDrawer);
   document.getElementById('dr-edit').addEventListener('click',()=>{if(detailId){closeDrawer();openModal(detailId);}});
-  updBadge();renderDash();
+  // Load from Firebase first, then render
+  loadFromFirebase().then(()=>{
+    const bI2=document.getElementById('budget-inp');
+    if(bI2)bI2.value=budget;
+    document.getElementById('budget-disp').textContent='U$D '+Number(budget).toLocaleString('es-AR');
+    updBadge();renderDash();
+  });
+  // Auto-sync every 30 seconds
+  setInterval(async()=>{
+    const prevLen=props.length;
+    await loadFromFirebase();
+    if(props.length!==prevLen){updBadge();renderView();}
+  },30000);
 });
 </script>
 </body>
